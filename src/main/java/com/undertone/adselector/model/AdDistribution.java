@@ -6,6 +6,10 @@ public interface AdDistribution extends AdBudget {
 
     public long remainingQuota();
 
+    public default boolean isExhausted(){
+        return remainingQuota() <= 0;
+    }
+
     public default boolean isEmpty() {
         return Objects.equals(this, EMPTY);
     }

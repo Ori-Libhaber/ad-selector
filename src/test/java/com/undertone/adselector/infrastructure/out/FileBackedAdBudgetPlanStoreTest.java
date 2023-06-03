@@ -4,6 +4,7 @@ import com.google.common.jimfs.Configuration;
 import com.google.common.jimfs.Jimfs;
 import com.google.common.jimfs.WatchServiceConfiguration;
 import com.undertone.adselector.model.AdBudget;
+import com.undertone.adselector.model.AdBudgetPlan;
 import lombok.RequiredArgsConstructor;
 import lombok.SneakyThrows;
 import org.junit.jupiter.api.Assertions;
@@ -35,10 +36,11 @@ class FileBackedAdBudgetPlanStoreTest {
         FileBackedAdBudgetPlanStore sut = new FileBackedAdBudgetPlanStore(testPlanFile);
 
         // WHEN
-        sut.loadPlanContent();
+        sut.loadAdBudgetPlan();
 
         // THEN
-        Optional<AdBudget> actualAdBudgetOp = sut.fetch("test1");
+        AdBudgetPlan adBudgetPlan = sut.fetchPlan().block();
+        Optional<AdBudget> actualAdBudgetOp = adBudgetPlan.fetch("test1");
         assertTrue(actualAdBudgetOp.isPresent());
 
         AdBudget actualAdBudget = actualAdBudgetOp.get();
@@ -61,12 +63,13 @@ class FileBackedAdBudgetPlanStoreTest {
         FileBackedAdBudgetPlanStore sut = new FileBackedAdBudgetPlanStore(testPlanFile);
 
         // WHEN
-        sut.loadPlanContent();
+        sut.loadAdBudgetPlan();
 
         // THEN
+        AdBudgetPlan adBudgetPlan = sut.fetchPlan().block();
 
         // First entry
-        Optional<AdBudget> actualFirstAdBudgetOp = sut.fetch("test1");
+        Optional<AdBudget> actualFirstAdBudgetOp = adBudgetPlan.fetch("test1");
         assertTrue(actualFirstAdBudgetOp.isPresent());
 
         AdBudget actualFirstAdBudget = actualFirstAdBudgetOp.get();
@@ -75,7 +78,7 @@ class FileBackedAdBudgetPlanStoreTest {
         assertEquals(100, actualFirstAdBudget.quota());
 
         // Second entry
-        Optional<AdBudget> actualSecondAdBudgetOp = sut.fetch("test2");
+        Optional<AdBudget> actualSecondAdBudgetOp = adBudgetPlan.fetch("test2");
         assertTrue(actualSecondAdBudgetOp.isPresent());
 
         AdBudget actualSecondAdBudget = actualSecondAdBudgetOp.get();
@@ -107,12 +110,14 @@ class FileBackedAdBudgetPlanStoreTest {
         FileBackedAdBudgetPlanStore sut = new FileBackedAdBudgetPlanStore(testPlanFile);
 
         // WHEN
-        sut.loadPlanContent();
+        sut.loadAdBudgetPlan();
 
         // THEN
 
         // First entry
-        Optional<AdBudget> actualFirstAdBudgetOp = sut.fetch("test1");
+        AdBudgetPlan adBudgetPlan = sut.fetchPlan().block();
+
+        Optional<AdBudget> actualFirstAdBudgetOp = adBudgetPlan.fetch("test1");
         assertTrue(actualFirstAdBudgetOp.isPresent());
 
         AdBudget actualFirstAdBudget = actualFirstAdBudgetOp.get();
@@ -121,13 +126,13 @@ class FileBackedAdBudgetPlanStoreTest {
         assertEquals(100, actualFirstAdBudget.quota());
 
         // Invalid entries
-        assertTrue(sut.fetch("12").isEmpty());
-        assertTrue(sut.fetch("missingPriority").isEmpty());
-        assertTrue(sut.fetch("nullPriority").isEmpty());
-        assertTrue(sut.fetch("StringPriority").isEmpty());
-        assertTrue(sut.fetch("missingQuota").isEmpty());
-        assertTrue(sut.fetch("nullQuota").isEmpty());
-        assertTrue(sut.fetch("StringQuota").isEmpty());
+        assertTrue(adBudgetPlan.fetch("12").isEmpty());
+        assertTrue(adBudgetPlan.fetch("missingPriority").isEmpty());
+        assertTrue(adBudgetPlan.fetch("nullPriority").isEmpty());
+        assertTrue(adBudgetPlan.fetch("StringPriority").isEmpty());
+        assertTrue(adBudgetPlan.fetch("missingQuota").isEmpty());
+        assertTrue(adBudgetPlan.fetch("nullQuota").isEmpty());
+        assertTrue(adBudgetPlan.fetch("StringQuota").isEmpty());
 
     }
 
@@ -143,11 +148,12 @@ class FileBackedAdBudgetPlanStoreTest {
         FileBackedAdBudgetPlanStore sut = new FileBackedAdBudgetPlanStore(testPlanFile);
 
         // WHEN
-        sut.loadPlanContent();
+        sut.loadAdBudgetPlan();
 
         // THEN
         for (AdBudgetMock adBudgetMock : arrayOfMaximumAdBudgetMocks) {
-            Optional<AdBudget> actualAdBudgetOp = sut.fetch(adBudgetMock.aid());
+            AdBudgetPlan adBudgetPlan = sut.fetchPlan().block();
+            Optional<AdBudget> actualAdBudgetOp = adBudgetPlan.fetch(adBudgetMock.aid());
             assertTrue(actualAdBudgetOp.isPresent());
 
             AdBudget actualAdBudget = actualAdBudgetOp.get();
@@ -170,7 +176,7 @@ class FileBackedAdBudgetPlanStoreTest {
         FileBackedAdBudgetPlanStore sut = new FileBackedAdBudgetPlanStore(nonExistingTestFile);
 
         // WHEN
-        Executable loadPlanContent = () -> sut.loadPlanContent();
+        Executable loadPlanContent = () -> sut.loadAdBudgetPlan();
 
         // THEN
         assertDoesNotThrow(loadPlanContent);
@@ -192,7 +198,8 @@ class FileBackedAdBudgetPlanStoreTest {
                         .withFileWatcher().build();
 
         // Test initial plan
-        Optional<AdBudget> actualFirstAdBudgetOp = sut.fetch("test1");
+        AdBudgetPlan adBudgetPlan = sut.fetchPlan().block();
+        Optional<AdBudget> actualFirstAdBudgetOp = adBudgetPlan.fetch("test1");
         assertTrue(actualFirstAdBudgetOp.isPresent());
 
         AdBudget actualFirstAdBudget = actualFirstAdBudgetOp.get();
@@ -208,7 +215,8 @@ class FileBackedAdBudgetPlanStoreTest {
             Optional<AdBudget> actualSecondAdBudgetOp;
             do {
                 TimeUnit.MILLISECONDS.sleep(100);
-                actualSecondAdBudgetOp = sut.fetch("test2");
+                AdBudgetPlan newAdBudgetPlan = sut.fetchPlan().block();
+                actualSecondAdBudgetOp = newAdBudgetPlan.fetch("test2");
             } while (actualSecondAdBudgetOp.isEmpty());
 
             // Second entry

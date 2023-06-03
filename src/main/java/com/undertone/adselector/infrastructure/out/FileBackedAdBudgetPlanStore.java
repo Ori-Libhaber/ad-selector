@@ -3,13 +3,16 @@ package com.undertone.adselector.infrastructure.out;
 import com.jsoniter.JsonIterator;
 import com.jsoniter.ValueType;
 import com.jsoniter.any.Any;
-import com.undertone.adselector.application.ports.in.UseCaseException;
+import com.undertone.adselector.application.ports.in.UseCaseException.AbortedException.TypeConversionException;
+import com.undertone.adselector.application.ports.out.AdBudgetPlanStore;
+import com.undertone.adselector.application.ports.out.InfrastructureException.StoreException;
 import com.undertone.adselector.application.ports.out.InfrastructureException.StoreException.InitializationException;
 import com.undertone.adselector.model.AdBudget;
 import com.undertone.adselector.model.AdBudgetPlan;
 import io.vavr.Lazy;
 import io.vavr.control.Try;
 import lombok.extern.slf4j.Slf4j;
+import reactor.core.publisher.Mono;
 
 import java.io.IOException;
 import java.nio.file.*;
@@ -22,18 +25,22 @@ import java.util.concurrent.Executors;
 import static java.lang.String.format;
 import static java.nio.file.Files.notExists;
 import static java.nio.file.StandardWatchEventKinds.*;
-import static java.util.Collections.emptyMap;
 import static java.util.Objects.*;
 
 @Slf4j
-public final class FileBackedAdBudgetPlanStore implements AdBudgetPlan {
+public final class FileBackedAdBudgetPlanStore implements AdBudgetPlanStore {
 
     private final Path planFile;
-    private volatile Map<String, AdBudget> aidToAdBudgetMapping;
+    private volatile AdBudgetPlan adBudgetPlan;
 
     FileBackedAdBudgetPlanStore(Path planFile) {
         this.planFile = requireNonNull(planFile, "Argument planFile must not be null");
-        this.aidToAdBudgetMapping = emptyMap();
+        this.adBudgetPlan = AdBudgetPlan.EMPTY;
+    }
+
+    @Override
+    public Mono<AdBudgetPlan> fetchPlan() throws StoreException {
+        return Mono.just(adBudgetPlan);
     }
 
     public static Builder builder(Path planFile) {
@@ -44,7 +51,6 @@ public final class FileBackedAdBudgetPlanStore implements AdBudgetPlan {
 
         private boolean withFileWatcher;
         private ExecutorService fileWatcherExecutor;
-
         private final Path planFile;
 
         Builder(Path planFile) {
@@ -63,11 +69,7 @@ public final class FileBackedAdBudgetPlanStore implements AdBudgetPlan {
 
         public FileBackedAdBudgetPlanStore build() throws InitializationException {
 
-            if (notExists(planFile, LinkOption.NOFOLLOW_LINKS)) {
-                throw new InitializationException(format("File under path: %s does not exist", planFile));
-            }
-
-            var built = new FileBackedAdBudgetPlanStore(planFile).loadPlanContent();
+            var built = new FileBackedAdBudgetPlanStore(planFile).loadAdBudgetPlan();
 
             if (withFileWatcher) {
                 activatePlanFileWatcher(built);
@@ -87,8 +89,6 @@ public final class FileBackedAdBudgetPlanStore implements AdBudgetPlan {
 
         private void activatePlanFileWatcher(FileBackedAdBudgetPlanStore built) throws InitializationException {
 
-            var planFile = built.planFile;
-
             var watcherExecutor =
                     Optional.ofNullable(fileWatcherExecutor)
                             .orElseGet(this::defaultFileWatcherExecutor);
@@ -107,8 +107,8 @@ public final class FileBackedAdBudgetPlanStore implements AdBudgetPlan {
                         while ((key = watchService.take()) != null) {
                             log.info("Detected changes to ad budget plan folder");
                             for (WatchEvent<?> event : key.pollEvents()) {
-                                if (isPlanFileModified(event, planFile)) {
-                                    built.loadPlanContent();
+                                if (isPlanFileModified(event)) {
+                                    built.loadAdBudgetPlan();
                                 }
                             }
                             key.reset();
@@ -123,39 +123,21 @@ public final class FileBackedAdBudgetPlanStore implements AdBudgetPlan {
             }
         }
 
-    }
-
-    private static boolean isPlanFileModified(WatchEvent<?> event, Path planFile) {
-        if (ENTRY_MODIFY.equals(event.kind()) && (event.context() instanceof Path p)) {
-            return planFile.getFileName().equals(p.getFileName());
+        private boolean isPlanFileModified(WatchEvent<?> event) {
+            if (ENTRY_MODIFY.equals(event.kind()) && (event.context() instanceof Path p)) {
+                return planFile.getFileName().equals(p.getFileName());
+            }
+            return false;
         }
-        return false;
+
     }
 
-    private static AdBudget buildLazyAdBudget(String aid, Any priority, Any quota) {
-        return Lazy.val(() -> Try.of(() -> AdBudgetImpl.build(aid, tryExtractValidPriority(priority), tryExtractValidQuota(quota)))
-                .onFailure(ex -> log.error("Failed to create AdBudget from lazy instance, replacing with EMPTY", ex))
-                    .getOrElse(AdBudget.EMPTY), AdBudget.class);
-    }
-
-    private static long tryExtractValidQuota(Any quotaAny) {
-        if(Objects.equals(ValueType.NUMBER, quotaAny.valueType())){
-            return quotaAny.toLong();
-        }
-        throw new UseCaseException.AbortedException.TypeConversionException(format("Field priority must be of type Number, but it was: %s", quotaAny));
-    }
-
-    private static double tryExtractValidPriority(Any priorityAny) throws UseCaseException.AbortedException.TypeConversionException {;
-        if(Objects.equals(ValueType.NUMBER, priorityAny.valueType())){
-            return priorityAny.toDouble();
-        }
-        throw new UseCaseException.AbortedException.TypeConversionException(format("Field priority must be of type Number, but it was: %s", priorityAny));
-    }
-
-    FileBackedAdBudgetPlanStore loadPlanContent() {
+    FileBackedAdBudgetPlanStore loadAdBudgetPlan() {
         log.info("Attempting to load ad budget plan from location: {}", planFile);
 
         final Instant start = Instant.now();
+
+        AdBudgetPlan builtPlan = AdBudgetPlan.EMPTY;
         try {
             Map<String, AdBudget> aidToAdBudget = new HashMap<>(10_110, 99f);
             Any adBudgetPlanJson = JsonIterator.parse(Files.newInputStream(planFile).readAllBytes()).readAny();
@@ -180,36 +162,45 @@ public final class FileBackedAdBudgetPlanStore implements AdBudgetPlan {
                 }
             }
 
-            aidToAdBudgetMapping = aidToAdBudget;
+            builtPlan = new InMemoryAdBudgetPlan(aidToAdBudget);
+
             log.info("Finished loading ad budget plan in {} ms", Duration.between(start, Instant.now()).toMillis());
-        } catch (Exception ex) {
-            aidToAdBudgetMapping = emptyMap();
+        }
+        catch (Exception ex) {
             log.error("Failed to load ad budget plan from location: {}", planFile, ex);
         }
+
+        this.adBudgetPlan = builtPlan;
 
         return this;
     }
 
-    private String tryExtractValidAid(Any adBudgetJson) throws UseCaseException.AbortedException.TypeConversionException {
+    private AdBudget buildLazyAdBudget(String aid, Any priority, Any quota) {
+        return Lazy.val(() -> Try.of(() -> AdBudgetImpl.build(aid, tryExtractValidPriority(priority), tryExtractValidQuota(quota)))
+                .onFailure(ex -> log.error("Failed to create AdBudget from lazy instance, replacing with EMPTY", ex))
+                .getOrElse(AdBudget.EMPTY), AdBudget.class);
+    }
+
+    private long tryExtractValidQuota(Any quotaAny) {
+        if(Objects.equals(ValueType.NUMBER, quotaAny.valueType())){
+            return quotaAny.toLong();
+        }
+        throw new TypeConversionException(format("Field priority must be of type Number, but it was: %s", quotaAny));
+    }
+
+    private double tryExtractValidPriority(Any priorityAny) throws TypeConversionException {;
+        if(Objects.equals(ValueType.NUMBER, priorityAny.valueType())){
+            return priorityAny.toDouble();
+        }
+        throw new TypeConversionException(format("Field priority must be of type Number, but it was: %s", priorityAny));
+    }
+
+    private String tryExtractValidAid(Any adBudgetJson) throws TypeConversionException {
         Any aidAny = adBudgetJson.get("aid").mustBeValid();
         if(Objects.equals(ValueType.STRING, aidAny.valueType())){
             return aidAny.toString();
         }
-        throw new UseCaseException.AbortedException.TypeConversionException(format("Field aid must be of type String, but it was: %s", aidAny));
-    }
-
-    @Override
-    public Optional<AdBudget> fetch(String aid) {
-        requireNonNull(aid, "Argument aid must not be null");
-
-        if (aidToAdBudgetMapping.isEmpty()) {
-            log.warn("Attempting to fetch AdBudget from empty AdBudgetPlan");
-        }
-
-        return Try.of(() -> aidToAdBudgetMapping.get(aid))
-                .filterTry(Objects::nonNull)
-                    .filterTry(lazyBudget -> !lazyBudget.isEmpty()) // triggers evaluation of lazy AdBudget
-                        .toJavaOptional();
+        throw new TypeConversionException(format("Field aid must be of type String, but it was: %s", aidAny));
     }
 
     private record AdBudgetImpl(String aid, double priority, long quota) implements AdBudget {
@@ -230,4 +221,35 @@ public final class FileBackedAdBudgetPlanStore implements AdBudgetPlan {
         }
 
     }
+
+    static class InMemoryAdBudgetPlan implements AdBudgetPlan {
+
+        private Map<String, AdBudget> aidToAdBudgetMapping;
+
+        InMemoryAdBudgetPlan(Map<String, AdBudget> aidToAdBudgetMapping) {
+            this.aidToAdBudgetMapping =
+                    requireNonNull(aidToAdBudgetMapping,
+                            "Argument aidToAdBudgetMapping must not be null");
+        }
+
+        @Override
+        public Optional<AdBudget> fetch(String aid) {
+            requireNonNull(aid, "Argument aid must not be null");
+
+            if (aidToAdBudgetMapping.isEmpty()) {
+                log.warn("Attempting to fetch AdBudget from empty AdBudgetPlan");
+            }
+
+            return Try.of(() -> aidToAdBudgetMapping.get(aid))
+                    .filterTry(Objects::nonNull)
+                        .filterTry(lazyBudget -> !lazyBudget.isEmpty()) // triggers evaluation of lazy AdBudget
+                            .toJavaOptional();
+        }
+
+        @Override
+        public boolean isEmpty() {
+            return this.aidToAdBudgetMapping.isEmpty();
+        }
+    }
+
 }
