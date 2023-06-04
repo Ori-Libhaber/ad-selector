@@ -46,13 +46,20 @@ public class AdSelectionService implements SelectAdUseCase {
         return planStore.fetchPlan()
                 .flatMap(plan ->
                         Flux.fromIterable(population)
+                            /**
+                             * Collect target population
+                             */
                             .map(aid -> plan.fetch(aid).stream())
                                 .reduce(Stream::concat)
                                     .map(Stream::toList)
                                         .filter(not(List::isEmpty))
-                                            .flatMap(selectionStrategy::select)
-                                                .retryWhen(fixedDelay(2, of(10, MILLIS)))
-                                                    .map(selected -> selected.map(AdBudget::aid))
-                );
+                            /**
+                             *  Select using selection strategy
+                             */
+                            .flatMap(selectionStrategy::select)
+                                .retryWhen(fixedDelay(2, of(10, MILLIS)))
+                                    .map(selected -> selected.map(AdBudget::aid))
+                )
+                .switchIfEmpty(Mono.just(Optional.empty()));
     }
 }

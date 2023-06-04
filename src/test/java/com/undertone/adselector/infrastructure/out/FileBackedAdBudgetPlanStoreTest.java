@@ -5,25 +5,31 @@ import com.google.common.jimfs.Jimfs;
 import com.google.common.jimfs.WatchServiceConfiguration;
 import com.undertone.adselector.model.AdBudget;
 import com.undertone.adselector.model.AdBudgetPlan;
-import lombok.RequiredArgsConstructor;
+import lombok.NoArgsConstructor;
 import lombok.SneakyThrows;
+import lombok.extern.slf4j.Slf4j;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
+import org.mockito.Mockito;
 
 import java.nio.file.FileSystem;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.*;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
 import static java.lang.String.format;
 import static java.util.Objects.isNull;
 import static org.junit.jupiter.api.Assertions.*;
+import static org.mockito.Mockito.spy;
 
+@Slf4j
 class FileBackedAdBudgetPlanStoreTest {
 
     @Test
@@ -93,18 +99,22 @@ class FileBackedAdBudgetPlanStoreTest {
     void loadPlanContent_givenPlanFileContainingInvalidEntry_thenStoreAllowsToFetchOnlyValidEntries_negative() {
 
         // GIVEN
+        final AdBudgetMock validAdBudgetMock = new AdBudgetMock("test1", 0.2, 100);
+
         Path testPlanFile = createTestPlanFilePath(
-                new AdBudgetMock("test1", 0.2, 100),
+                validAdBudgetMock,
 
-                new InvalidAdBudgetMock(Map.of("aid", 12, "priority", 0.55d, "quota", 200)),
+                InvalidAdBudgetMock.from(validAdBudgetMock).aid(), // missingAid
+                InvalidAdBudgetMock.from(validAdBudgetMock).aid(null), // nullAid
+                InvalidAdBudgetMock.from(validAdBudgetMock).aid(12), // numberAid
 
-                new InvalidAdBudgetMock(Map.of("aid", "missingPriority", "quota", 200)),
-                new InvalidAdBudgetMock(new HashMap<>(){{ put("aid", "nullPriority"); put("priority", null); put("quota", 200); }}),
-                new InvalidAdBudgetMock(Map.of("aid", "StringPriority", "priority", "coco", "quota", 200)),
+                InvalidAdBudgetMock.from(validAdBudgetMock).aid("missingPriority").priority(),
+                InvalidAdBudgetMock.from(validAdBudgetMock).aid("nullPriority").priority(null),
+                InvalidAdBudgetMock.from(validAdBudgetMock).aid("StringPriority").priority("coco"),
 
-                new InvalidAdBudgetMock(Map.of("aid", "missingQuota", "priority", 0.55d)),
-                new InvalidAdBudgetMock(new HashMap<>(){{ put("aid", "nullQuota"); put("priority", 0.55d); put("quota", null); }}),
-                new InvalidAdBudgetMock(Map.of("aid", "StringQuota", "priority", 0.55d, "quota", "jumbo"))
+                InvalidAdBudgetMock.from(validAdBudgetMock).aid("missingQuota").quota(),
+                InvalidAdBudgetMock.from(validAdBudgetMock).aid("nullQuota").quota(null),
+                InvalidAdBudgetMock.from(validAdBudgetMock).aid("StringQuota").priority("jumbo")
         );
 
         FileBackedAdBudgetPlanStore sut = new FileBackedAdBudgetPlanStore(testPlanFile);
@@ -126,6 +136,7 @@ class FileBackedAdBudgetPlanStoreTest {
         assertEquals(100, actualFirstAdBudget.quota());
 
         // Invalid entries
+        assertTrue(adBudgetPlan.fetch("null").isEmpty());
         assertTrue(adBudgetPlan.fetch("12").isEmpty());
         assertTrue(adBudgetPlan.fetch("missingPriority").isEmpty());
         assertTrue(adBudgetPlan.fetch("nullPriority").isEmpty());
@@ -193,9 +204,11 @@ class FileBackedAdBudgetPlanStoreTest {
                 new AdBudgetMock("test1", 0.2, 100)
         );
 
+        CountDownLatch planFileRefreshed = new CountDownLatch(1);
+
         FileBackedAdBudgetPlanStore sut =
                 FileBackedAdBudgetPlanStore.builder(testPlanFile)
-                        .withFileWatcher().build();
+                        .withFileWatcher(status -> planFileRefreshed.countDown()).build();
 
         // Test initial plan
         AdBudgetPlan adBudgetPlan = sut.fetchPlan().block();
@@ -212,12 +225,9 @@ class FileBackedAdBudgetPlanStoreTest {
 
         // THEN
         Assertions.assertTimeout(Duration.of(3, ChronoUnit.SECONDS), () -> {
-            Optional<AdBudget> actualSecondAdBudgetOp;
-            do {
-                TimeUnit.MILLISECONDS.sleep(100);
-                AdBudgetPlan newAdBudgetPlan = sut.fetchPlan().block();
-                actualSecondAdBudgetOp = newAdBudgetPlan.fetch("test2");
-            } while (actualSecondAdBudgetOp.isEmpty());
+            planFileRefreshed.await(); // waiting for budget plan to finish loading
+            AdBudgetPlan newAdBudgetPlan = sut.fetchPlan().block();
+            Optional<AdBudget> actualSecondAdBudgetOp = newAdBudgetPlan.fetch("test2");
 
             // Second entry
             assertTrue(actualSecondAdBudgetOp.isPresent());
@@ -283,10 +293,59 @@ class FileBackedAdBudgetPlanStoreTest {
         }
     }
 
-    @RequiredArgsConstructor
-    class InvalidAdBudgetMock {
+    @NoArgsConstructor
+    static class InvalidAdBudgetMock {
 
-        final Map<String, Object> fields;
+        final Map<String, Object> fields = new HashMap<>();
+
+        private InvalidAdBudgetMock(InvalidAdBudgetMock other) {
+            this.fields.putAll(other.fields);
+        }
+
+        static InvalidAdBudgetMock from(AdBudgetMock sourceMock) {
+            return new InvalidAdBudgetMock()
+                    .aid(sourceMock.aid)
+                        .priority(sourceMock.priority)
+                            .quota(sourceMock.quota);
+        }
+
+        static InvalidAdBudgetMock from(InvalidAdBudgetMock sourceMock) {
+            return new InvalidAdBudgetMock(sourceMock);
+        }
+
+        InvalidAdBudgetMock with(String key, Object value) {
+            this.fields.put(key, value);
+            return this;
+        }
+
+        InvalidAdBudgetMock withOut(String key) {
+            this.fields.remove(key);
+            return this;
+        }
+
+        InvalidAdBudgetMock aid(){
+            return withOut("aid");
+        }
+
+        InvalidAdBudgetMock aid(Object value){
+            return with("aid", value);
+        }
+
+        InvalidAdBudgetMock priority(Object value){
+            return with("priority", value);
+        }
+
+        InvalidAdBudgetMock priority(){
+            return withOut("priority");
+        }
+
+        InvalidAdBudgetMock quota(Object value){
+            return with("quota", value);
+        }
+
+        InvalidAdBudgetMock quota(){
+            return withOut("quota");
+        }
 
         @Override
         public String toString() {

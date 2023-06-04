@@ -3,6 +3,8 @@ package com.undertone.adselector.infrastructure.out;
 import com.jsoniter.JsonIterator;
 import com.jsoniter.ValueType;
 import com.jsoniter.any.Any;
+import com.undertone.adselector.application.ports.in.UseCaseException;
+import com.undertone.adselector.application.ports.in.UseCaseException.AbortedException;
 import com.undertone.adselector.application.ports.in.UseCaseException.AbortedException.TypeConversionException;
 import com.undertone.adselector.application.ports.out.AdBudgetPlanStore;
 import com.undertone.adselector.application.ports.out.InfrastructureException.StoreException;
@@ -19,13 +21,19 @@ import java.nio.file.*;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.function.Consumer;
 
+import static io.vavr.control.Try.failure;
+import static io.vavr.control.Try.success;
 import static java.lang.String.format;
 import static java.nio.file.Files.notExists;
 import static java.nio.file.StandardWatchEventKinds.*;
 import static java.util.Objects.*;
+import static java.util.function.Predicate.not;
 
 @Slf4j
 public final class FileBackedAdBudgetPlanStore implements AdBudgetPlanStore {
@@ -51,15 +59,37 @@ public final class FileBackedAdBudgetPlanStore implements AdBudgetPlanStore {
 
         private boolean withFileWatcher;
         private ExecutorService fileWatcherExecutor;
+
+        private Consumer<Boolean> loadCompletionCallback;
         private final Path planFile;
 
         Builder(Path planFile) {
             this.planFile = requireNonNull(planFile, "Argument planFile must not be null");
+            this.loadCompletionCallback = ignored -> {};
         }
 
         public Builder withFileWatcher() {
             this.withFileWatcher = true;
             return this;
+        }
+
+        /**
+         * Enable plan file watcher service for automatic re-loading of plan file contents if those change on disk.
+         * @param loadCompletionCallback provide some side effect free callback to execute once loading is complete.
+         *                              Consumer input value true indicates success, false otherwise.
+         *                              Please take extra care to avoid any lengthy calculations, callback will execute
+         *                              on common thread pool.
+         * @return Builder
+         */
+        public Builder withFileWatcher(Consumer<Boolean> loadCompletionCallback) {
+            this.loadCompletionCallback = (status) -> {
+                try {
+                    loadCompletionCallback.accept(status);
+                } catch (Exception ex) {
+                    log.warn("Load completion callback raised exception", ex);
+                }
+            };
+            return withFileWatcher();
         }
 
         public Builder usingFileWatcherExecutor(ExecutorService executor) {
@@ -79,7 +109,7 @@ public final class FileBackedAdBudgetPlanStore implements AdBudgetPlanStore {
         }
 
         private ExecutorService defaultFileWatcherExecutor(){
-            return Executors.newSingleThreadExecutor(runnable -> {
+            return Executors.newFixedThreadPool(2, runnable -> {
                 Thread thread = new Thread(runnable);
                 thread.setName("plan-file-watcher");
                 thread.setDaemon(true);
@@ -106,9 +136,15 @@ public final class FileBackedAdBudgetPlanStore implements AdBudgetPlanStore {
                     try {
                         while ((key = watchService.take()) != null) {
                             log.info("Detected changes to ad budget plan folder");
+
+                            var executionGuard =
+                                    Lazy.of(() -> nonNull(built.loadAdBudgetPlan()))
+                                            .toCompletableFuture().thenAcceptAsync
+                                                    (loadCompletionCallback, watcherExecutor);
+
                             for (WatchEvent<?> event : key.pollEvents()) {
                                 if (isPlanFileModified(event)) {
-                                    built.loadAdBudgetPlan();
+                                    executionGuard.get();
                                 }
                             }
                             key.reset();
@@ -150,6 +186,7 @@ public final class FileBackedAdBudgetPlanStore implements AdBudgetPlanStore {
              */
             for (Any adBudgetJson : adBudgetPlanJson.get("Ads").mustBeValid()) {
                 try {
+
                     String aid = tryExtractValidAid(adBudgetJson);
 
                         aidToAdBudget.put(aid,
@@ -178,7 +215,7 @@ public final class FileBackedAdBudgetPlanStore implements AdBudgetPlanStore {
     private AdBudget buildLazyAdBudget(String aid, Any priority, Any quota) {
         return Lazy.val(() -> Try.of(() -> AdBudgetImpl.build(aid, tryExtractValidPriority(priority), tryExtractValidQuota(quota)))
                 .onFailure(ex -> log.error("Failed to create AdBudget from lazy instance, replacing with EMPTY", ex))
-                .getOrElse(AdBudget.EMPTY), AdBudget.class);
+                    .getOrElse(AdBudget.EMPTY), AdBudget.class);
     }
 
     private long tryExtractValidQuota(Any quotaAny) {
@@ -188,7 +225,7 @@ public final class FileBackedAdBudgetPlanStore implements AdBudgetPlanStore {
         throw new TypeConversionException(format("Field priority must be of type Number, but it was: %s", quotaAny));
     }
 
-    private double tryExtractValidPriority(Any priorityAny) throws TypeConversionException {;
+    private double tryExtractValidPriority(Any priorityAny) throws TypeConversionException {
         if(Objects.equals(ValueType.NUMBER, priorityAny.valueType())){
             return priorityAny.toDouble();
         }
@@ -224,32 +261,44 @@ public final class FileBackedAdBudgetPlanStore implements AdBudgetPlanStore {
 
     static class InMemoryAdBudgetPlan implements AdBudgetPlan {
 
-        private Map<String, AdBudget> aidToAdBudgetMapping;
+        private ConcurrentMap<String, AdBudget> aidToAdBudgetMapping;
 
         InMemoryAdBudgetPlan(Map<String, AdBudget> aidToAdBudgetMapping) {
             this.aidToAdBudgetMapping =
-                    requireNonNull(aidToAdBudgetMapping,
-                            "Argument aidToAdBudgetMapping must not be null");
+                    new ConcurrentHashMap<>(requireNonNull(aidToAdBudgetMapping,
+                            "Argument aidToAdBudgetMapping must not be null"));
         }
 
         @Override
         public Optional<AdBudget> fetch(String aid) {
             requireNonNull(aid, "Argument aid must not be null");
 
-            if (aidToAdBudgetMapping.isEmpty()) {
-                log.warn("Attempting to fetch AdBudget from empty AdBudgetPlan");
+            if (!aidToAdBudgetMapping.isEmpty()) {
+                return Try.of(() -> aidToAdBudgetMapping.get(aid))
+                        .filterTry(Objects::nonNull)
+                            .peek(lazyBudget -> {
+                                if (lazyBudget.isEmpty()) { // triggers evaluation of lazy AdBudget
+                                    log.warn(new StringBuilder()
+                                            .append("Fetching aid: \"").append(aid).append("\" produced an empty AdBudget.")
+                                                .append(" Entry will be removed from internal mapping to reduce future processing times")
+                                                    .toString());
+
+                                    aidToAdBudgetMapping.remove(aid);
+                                }
+                            })
+                            .filter(not(AdBudget::isEmpty))
+                                .toJavaOptional();
             }
 
-            return Try.of(() -> aidToAdBudgetMapping.get(aid))
-                    .filterTry(Objects::nonNull)
-                        .filterTry(lazyBudget -> !lazyBudget.isEmpty()) // triggers evaluation of lazy AdBudget
-                            .toJavaOptional();
+            log.warn("Attempting to fetch AdBudget from empty AdBudgetPlan");
+            return Optional.empty();
         }
 
         @Override
         public boolean isEmpty() {
             return this.aidToAdBudgetMapping.isEmpty();
         }
+
     }
 
 }
