@@ -43,5 +43,51 @@ Each block section is internally divided into groups that correlate to Java pack
     * environment variable: PLAN_FILE_LAZY_LOADING_ENABLED=true
   *  By default eager parsing is used.
 * Test coverage is around 85% - 100% for essential flows.
-* Test containers were used to test RedisBackedAdDistributionStore
+* ![](E:\Dev\Others\ad-selector\docs\coverage.PNG)
+* Test containers library was used to test *RedisBackedAdDistributionStore* which utilizes Spring's reactive Redis template to persist and synchronize quota  spending between service instances.
 
+## Endpoints
+
+There's just a single RESTful enpoint to fetch selections under `/api/v1/selectAd` as can be seen in the following example:
+
+POST http://localhost:8080/api/v1/selectAd
+*Content-Type*: application/json
+
+{
+  "q": [
+    "test0",
+    "test1",
+    "test9997",
+    "test9996",
+    "test9995",
+    "test9994",
+    "test9993",
+    "test9992",
+    "test9991",
+    "test9990",
+    "test9989",
+    "test9988",
+    "test9987",
+    "test12",
+    "test15"
+  ]
+}
+
+## How to run?
+
+First thing to do is to compile and package the executable jar using:
+
+`mvn clean install -T1C`
+
+Once build is complete, it's recommended to use the attached `docker-compose.yml` to spin-up a Redis container along side
+the application container.
+
+To do that (assuming docker desktop or equivalent is installed) under the root project folder, run:
+
+`docker-compose up -d`
+
+### Please note
+
+Project root folder contains `./ad-selector/plans/plan.json`
+This is a running exmaple for a plan file, you my replace it with any plan file of your own either when creating the image 
+(it is being copied in Dockerfile to container) or by directly uploading it to a running container under `/plans`

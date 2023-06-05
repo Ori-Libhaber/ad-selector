@@ -23,6 +23,9 @@ services:
     environment:
       - REDIS_HOST=redis
       - REDIS_PORT=6379
+      - PLAN_FILE=/plan/plan.json
+      - PLAN_FILE_WATCHER_ENABLED=false
+      - PLAN_FILE_LAZY_LOADING_ENABLED=false
     volumes:
       - selector-plans:/plans
 
