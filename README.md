@@ -7,7 +7,7 @@ Undertone coding task
 * Terminology and structure are inspired by *Alistair Cockburn's* definition of the "Hexagonal architecture" a.k.a "Ports and Adapters Pattern".
   * Ports - Essentially interfaces and other abstractions intended to be implemented by external modules, thus promoting
     system extensibility without requiring to push code changes to core business logic.
-  * Adaptors - Those are the actual implementations for the so called Ports.
+  * Adaptors - Those are the actual implementations for the so-called Ports.
   * Read more about it [here](https://alistair.cockburn.us/hexagonal-architecture/)
 
 ## High-Level Class Diagram
@@ -41,7 +41,7 @@ Each block section is internally divided into groups that correlate to Java pack
   * Implementation optionally supports lazy parsing of plan contents (AdBudget instances), toggleable by either
     * application.properties value: plan.file.lazy.loading.enabled=true
     * environment variable: PLAN_FILE_LAZY_LOADING_ENABLED=true
-  *  By default eager parsing is used.
+  *  By default, eager parsing is used.
 * Test coverage is around 85% - 100% for essential flows.
 * ![](E:\Dev\Others\ad-selector\docs\coverage.PNG)
 * Test containers library was used to test *RedisBackedAdDistributionStore* which utilizes Spring's reactive Redis template to persist and synchronize quota  spending between service instances.
@@ -79,7 +79,7 @@ First thing to do is to compile and package the executable jar using:
 
 `mvn clean install -T1C`
 
-Once build is complete, it's recommended to use the attached `docker-compose.yml` to spin-up a Redis container along side
+Once build is complete, it's recommended to use the attached `docker-compose.yml` to spin-up a Redis container alongside
 the application container.
 
 To do that (assuming docker desktop or equivalent is installed) under the root project folder, run:
@@ -88,6 +88,6 @@ To do that (assuming docker desktop or equivalent is installed) under the root p
 
 ### Please note
 
-Project root folder contains `./ad-selector/plans/plan.json`
-This is a running exmaple for a plan file, you my replace it with any plan file of your own either when creating the image 
-(it is being copied in Dockerfile to container) or by directly uploading it to a running container under `/plans`
+Project root folder contains `./ad-selector/plan/plan.json`
+This is a running example for a plan file, you my replace it with any plan file of your own either when creating the image 
+(it is being copied in Dockerfile to container) or by directly uploading it to a running container under `/plan`
