@@ -13,12 +13,13 @@ public class ModuleConfiguration {
 
     @Bean
     public AdBudgetPlanStore adBudgetPlan(@Value("${plan.file}") Path adBudgetPlanFile,
-                                          @Value("${plan.file.watcher.enabled:true}") boolean withFileWatcher) {
-        var built = FileBackedAdBudgetPlanStore.builder(adBudgetPlanFile);
-        if (withFileWatcher) {
-            built.withFileWatcher();
-        }
-        return built.build();
+                                          @Value("${plan.file.watcher.enabled:true}") boolean enableFileWatcher,
+                                          @Value("${plan.file.lazy.loading.enabled:false}") boolean enableLazyLoading) {
+
+        return FileBackedAdBudgetPlanStore
+                .builder(adBudgetPlanFile).withFileWatcher(enableFileWatcher)
+                    .withLazyLoading(enableLazyLoading)
+                        .build();
     }
 
 }

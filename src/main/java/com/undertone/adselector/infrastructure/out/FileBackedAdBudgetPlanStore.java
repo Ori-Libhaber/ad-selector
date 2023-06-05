@@ -3,8 +3,6 @@ package com.undertone.adselector.infrastructure.out;
 import com.jsoniter.JsonIterator;
 import com.jsoniter.ValueType;
 import com.jsoniter.any.Any;
-import com.undertone.adselector.application.ports.in.UseCaseException;
-import com.undertone.adselector.application.ports.in.UseCaseException.AbortedException;
 import com.undertone.adselector.application.ports.in.UseCaseException.AbortedException.TypeConversionException;
 import com.undertone.adselector.application.ports.out.AdBudgetPlanStore;
 import com.undertone.adselector.application.ports.out.InfrastructureException.StoreException;
@@ -27,10 +25,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.function.Consumer;
 
-import static io.vavr.control.Try.failure;
-import static io.vavr.control.Try.success;
 import static java.lang.String.format;
-import static java.nio.file.Files.notExists;
 import static java.nio.file.StandardWatchEventKinds.*;
 import static java.util.Objects.*;
 import static java.util.function.Predicate.not;
@@ -39,11 +34,23 @@ import static java.util.function.Predicate.not;
 public final class FileBackedAdBudgetPlanStore implements AdBudgetPlanStore {
 
     private final Path planFile;
+
+    private final LoadingStrategy loadingStrategy;
     private volatile AdBudgetPlan adBudgetPlan;
 
     FileBackedAdBudgetPlanStore(Path planFile) {
+        this(planFile, false);
+    }
+
+    FileBackedAdBudgetPlanStore(Path planFile, boolean lazyLoading) {
         this.planFile = requireNonNull(planFile, "Argument planFile must not be null");
         this.adBudgetPlan = AdBudgetPlan.EMPTY;
+        this.loadingStrategy = lazyLoading ? this::buildLazyAdBudget : this::buildEagerAdBudget;
+    }
+
+    @FunctionalInterface
+    private interface LoadingStrategy {
+        AdBudget build(String aid, Any priority, Any quota);
     }
 
     @Override
@@ -62,14 +69,16 @@ public final class FileBackedAdBudgetPlanStore implements AdBudgetPlanStore {
 
         private Consumer<Boolean> loadCompletionCallback;
         private final Path planFile;
+        private boolean lazyLoading;
 
         Builder(Path planFile) {
             this.planFile = requireNonNull(planFile, "Argument planFile must not be null");
             this.loadCompletionCallback = ignored -> {};
+            this.lazyLoading = false;
         }
 
-        public Builder withFileWatcher() {
-            this.withFileWatcher = true;
+        public Builder withFileWatcher(boolean enable) {
+            this.withFileWatcher = enable;
             return this;
         }
 
@@ -89,17 +98,22 @@ public final class FileBackedAdBudgetPlanStore implements AdBudgetPlanStore {
                     log.warn("Load completion callback raised exception", ex);
                 }
             };
-            return withFileWatcher();
+            return withFileWatcher(true);
         }
 
-        public Builder usingFileWatcherExecutor(ExecutorService executor) {
+        public Builder withLazyLoading(boolean enable) {
+            this.lazyLoading = enable;
+            return this;
+        }
+
+        public Builder withFileWatcherExecutor(ExecutorService executor) {
             this.fileWatcherExecutor = requireNonNull(executor, "Argument executor must not be null");
             return this;
         }
 
         public FileBackedAdBudgetPlanStore build() throws InitializationException {
 
-            var built = new FileBackedAdBudgetPlanStore(planFile).loadAdBudgetPlan();
+            var built = new FileBackedAdBudgetPlanStore(planFile, lazyLoading).loadAdBudgetPlan();
 
             if (withFileWatcher) {
                 activatePlanFileWatcher(built);
@@ -109,7 +123,7 @@ public final class FileBackedAdBudgetPlanStore implements AdBudgetPlanStore {
         }
 
         private ExecutorService defaultFileWatcherExecutor(){
-            return Executors.newFixedThreadPool(2, runnable -> {
+            return Executors.newSingleThreadExecutor(runnable -> {
                 Thread thread = new Thread(runnable);
                 thread.setName("plan-file-watcher");
                 thread.setDaemon(true);
@@ -136,11 +150,10 @@ public final class FileBackedAdBudgetPlanStore implements AdBudgetPlanStore {
                     try {
                         while ((key = watchService.take()) != null) {
                             log.info("Detected changes to ad budget plan folder");
-
                             var executionGuard =
                                     Lazy.of(() -> nonNull(built.loadAdBudgetPlan()))
-                                            .toCompletableFuture().thenAcceptAsync
-                                                    (loadCompletionCallback, watcherExecutor);
+                                            .toCompletableFuture()
+                                                .thenAcceptAsync(loadCompletionCallback);
 
                             for (WatchEvent<?> event : key.pollEvents()) {
                                 if (isPlanFileModified(event)) {
@@ -178,21 +191,15 @@ public final class FileBackedAdBudgetPlanStore implements AdBudgetPlanStore {
             Map<String, AdBudget> aidToAdBudget = new HashMap<>(10_110, 99f);
             Any adBudgetPlanJson = JsonIterator.parse(Files.newInputStream(planFile).readAllBytes()).readAny();
 
-            /**
-             * To improve performance, populating map with lazy instances of AdBudget.
-             * The latter are created without field level type validation.
-             * Any runtime deserialization issues will be logged and faulty entries would
-             * be substituted by instances of AdBudget.EMPTY
-             */
             for (Any adBudgetJson : adBudgetPlanJson.get("Ads").mustBeValid()) {
                 try {
 
                     String aid = tryExtractValidAid(adBudgetJson);
 
                         aidToAdBudget.put(aid,
-                                buildLazyAdBudget(aid,
-                                    adBudgetJson.get("priority").mustBeValid(),
-                                        adBudgetJson.get("quota").mustBeValid()));
+                                loadingStrategy.build(aid,
+                                        adBudgetJson.get("priority").mustBeValid(),
+                                            adBudgetJson.get("quota").mustBeValid()));
 
                 } catch (Exception ex) {
                     log.warn("Failed parsing entry: {} into AdBudget, skipping.", adBudgetJson);
@@ -212,10 +219,27 @@ public final class FileBackedAdBudgetPlanStore implements AdBudgetPlanStore {
         return this;
     }
 
+    /**
+     * To potentially improve performance, map could be populated with lazy instances of AdBudget.
+     * The latter are created without field level type validation.
+     * Any runtime deserialization issues will be logged and faulty entries would
+     * be substituted by instances of AdBudget.EMPTY
+     */
     private AdBudget buildLazyAdBudget(String aid, Any priority, Any quota) {
         return Lazy.val(() -> Try.of(() -> AdBudgetImpl.build(aid, tryExtractValidPriority(priority), tryExtractValidQuota(quota)))
                 .onFailure(ex -> log.error("Failed to create AdBudget from lazy instance, replacing with EMPTY", ex))
                     .getOrElse(AdBudget.EMPTY), AdBudget.class);
+    }
+
+    /**
+     * Default eager instantiation of map population.
+     * Any runtime deserialization issues will be logged and faulty entries would
+     * be substituted by instances of AdBudget.EMPTY
+     */
+    private AdBudget buildEagerAdBudget(String aid, Any priority, Any quota) {
+        return Try.of(() -> AdBudgetImpl.build(aid, tryExtractValidPriority(priority), tryExtractValidQuota(quota)))
+                .onFailure(ex -> log.error("Failed to create AdBudget from lazy instance, replacing with EMPTY", ex))
+                    .getOrElse(AdBudget.EMPTY);
     }
 
     private long tryExtractValidQuota(Any quotaAny) {

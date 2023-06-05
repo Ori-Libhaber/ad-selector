@@ -12,13 +12,11 @@ import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
-import org.mockito.Mockito;
 
 import java.nio.file.FileSystem;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
-import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.*;
 import java.util.concurrent.CountDownLatch;
@@ -38,7 +36,7 @@ class FileBackedAdBudgetPlanStoreTest {
     void loadPlanContent_givenPlanFileWithSingleEntry_thenStoreContainsSingleEntry_positive() {
 
         // GIVEN
-        Path testPlanFile = createTestPlanFilePath(new AdBudgetMock("test1", 0.2, 100));
+        Path testPlanFile = createTestPlanFilePath(new StrictAdBudgetMock("test1", 0.2, 100));
         FileBackedAdBudgetPlanStore sut = new FileBackedAdBudgetPlanStore(testPlanFile);
 
         // WHEN
@@ -62,8 +60,8 @@ class FileBackedAdBudgetPlanStoreTest {
 
         // GIVEN
         Path testPlanFile = createTestPlanFilePath(
-                new AdBudgetMock("test1", 0.2, 100),
-                new AdBudgetMock("test2", 0.78, 20)
+                new StrictAdBudgetMock("test1", 0.2, 100),
+                new StrictAdBudgetMock("test2", 0.78, 20)
         );
 
         FileBackedAdBudgetPlanStore sut = new FileBackedAdBudgetPlanStore(testPlanFile);
@@ -99,22 +97,22 @@ class FileBackedAdBudgetPlanStoreTest {
     void loadPlanContent_givenPlanFileContainingInvalidEntry_thenStoreAllowsToFetchOnlyValidEntries_negative() {
 
         // GIVEN
-        final AdBudgetMock validAdBudgetMock = new AdBudgetMock("test1", 0.2, 100);
+        final StrictAdBudgetMock validAdBudgetMock = new StrictAdBudgetMock("test1", 0.2, 100);
 
         Path testPlanFile = createTestPlanFilePath(
                 validAdBudgetMock,
 
-                InvalidAdBudgetMock.from(validAdBudgetMock).aid(), // missingAid
-                InvalidAdBudgetMock.from(validAdBudgetMock).aid(null), // nullAid
-                InvalidAdBudgetMock.from(validAdBudgetMock).aid(12), // numberAid
+                FlexibleAdBudgetMock.from(validAdBudgetMock).aid(), // missingAid
+                FlexibleAdBudgetMock.from(validAdBudgetMock).aid(null), // nullAid
+                FlexibleAdBudgetMock.from(validAdBudgetMock).aid(12), // numberAid
 
-                InvalidAdBudgetMock.from(validAdBudgetMock).aid("missingPriority").priority(),
-                InvalidAdBudgetMock.from(validAdBudgetMock).aid("nullPriority").priority(null),
-                InvalidAdBudgetMock.from(validAdBudgetMock).aid("StringPriority").priority("coco"),
+                FlexibleAdBudgetMock.from(validAdBudgetMock).aid("missingPriority").priority(),
+                FlexibleAdBudgetMock.from(validAdBudgetMock).aid("nullPriority").priority(null),
+                FlexibleAdBudgetMock.from(validAdBudgetMock).aid("StringPriority").priority("coco"),
 
-                InvalidAdBudgetMock.from(validAdBudgetMock).aid("missingQuota").quota(),
-                InvalidAdBudgetMock.from(validAdBudgetMock).aid("nullQuota").quota(null),
-                InvalidAdBudgetMock.from(validAdBudgetMock).aid("StringQuota").priority("jumbo")
+                FlexibleAdBudgetMock.from(validAdBudgetMock).aid("missingQuota").quota(),
+                FlexibleAdBudgetMock.from(validAdBudgetMock).aid("nullQuota").quota(null),
+                FlexibleAdBudgetMock.from(validAdBudgetMock).aid("StringQuota").priority("jumbo")
         );
 
         FileBackedAdBudgetPlanStore sut = new FileBackedAdBudgetPlanStore(testPlanFile);
@@ -152,7 +150,7 @@ class FileBackedAdBudgetPlanStoreTest {
     void loadPlanContent_givenPlanFileWithMaximumNumberOfEntries_thenStoreContainsAllEntries_positive() {
 
         // GIVEN
-        AdBudgetMock[] arrayOfMaximumAdBudgetMocks = createArrayOfAdBudgetMocks(10_000);
+        StrictAdBudgetMock[] arrayOfMaximumAdBudgetMocks = createArrayOfStrictAdBudgetMocks(10_000);
 
         Path testPlanFile = createTestPlanFilePath(arrayOfMaximumAdBudgetMocks);
 
@@ -162,7 +160,7 @@ class FileBackedAdBudgetPlanStoreTest {
         sut.loadAdBudgetPlan();
 
         // THEN
-        for (AdBudgetMock adBudgetMock : arrayOfMaximumAdBudgetMocks) {
+        for (StrictAdBudgetMock adBudgetMock : arrayOfMaximumAdBudgetMocks) {
             AdBudgetPlan adBudgetPlan = sut.fetchPlan().block();
             Optional<AdBudget> actualAdBudgetOp = adBudgetPlan.fetch(adBudgetMock.aid());
             assertTrue(actualAdBudgetOp.isPresent());
@@ -201,7 +199,7 @@ class FileBackedAdBudgetPlanStoreTest {
 
         // GIVEN
         Path testPlanFile = createTestPlanFilePath(
-                new AdBudgetMock("test1", 0.2, 100)
+                new StrictAdBudgetMock("test1", 0.2, 100)
         );
 
         CountDownLatch planFileRefreshed = new CountDownLatch(1);
@@ -221,7 +219,7 @@ class FileBackedAdBudgetPlanStoreTest {
         assertEquals(100, actualFirstAdBudget.quota());
 
         // WHEN
-        writeAdBudgetPlanToPath(testPlanFile, new AdBudgetMock("test2", 0.78d, 20));
+        writeAdBudgetPlanToPath(testPlanFile, new StrictAdBudgetMock("test2", 0.78d, 20));
 
         // THEN
         Assertions.assertTimeout(Duration.of(3, ChronoUnit.SECONDS), () -> {
@@ -279,7 +277,7 @@ class FileBackedAdBudgetPlanStoreTest {
 
     }
 
-    record AdBudgetMock(String aid, double priority, long quota) implements AdBudget {
+    record StrictAdBudgetMock(String aid, double priority, long quota) implements AdBudget {
         @Override
         public String toString() {
             return format(
@@ -294,56 +292,56 @@ class FileBackedAdBudgetPlanStoreTest {
     }
 
     @NoArgsConstructor
-    static class InvalidAdBudgetMock {
+    static class FlexibleAdBudgetMock {
 
         final Map<String, Object> fields = new HashMap<>();
 
-        private InvalidAdBudgetMock(InvalidAdBudgetMock other) {
+        private FlexibleAdBudgetMock(FlexibleAdBudgetMock other) {
             this.fields.putAll(other.fields);
         }
 
-        static InvalidAdBudgetMock from(AdBudgetMock sourceMock) {
-            return new InvalidAdBudgetMock()
+        static FlexibleAdBudgetMock from(StrictAdBudgetMock sourceMock) {
+            return new FlexibleAdBudgetMock()
                     .aid(sourceMock.aid)
                         .priority(sourceMock.priority)
                             .quota(sourceMock.quota);
         }
 
-        static InvalidAdBudgetMock from(InvalidAdBudgetMock sourceMock) {
-            return new InvalidAdBudgetMock(sourceMock);
+        static FlexibleAdBudgetMock from(FlexibleAdBudgetMock sourceMock) {
+            return new FlexibleAdBudgetMock(sourceMock);
         }
 
-        InvalidAdBudgetMock with(String key, Object value) {
+        FlexibleAdBudgetMock with(String key, Object value) {
             this.fields.put(key, value);
             return this;
         }
 
-        InvalidAdBudgetMock withOut(String key) {
+        FlexibleAdBudgetMock withOut(String key) {
             this.fields.remove(key);
             return this;
         }
 
-        InvalidAdBudgetMock aid(){
+        FlexibleAdBudgetMock aid(){
             return withOut("aid");
         }
 
-        InvalidAdBudgetMock aid(Object value){
+        FlexibleAdBudgetMock aid(Object value){
             return with("aid", value);
         }
 
-        InvalidAdBudgetMock priority(Object value){
+        FlexibleAdBudgetMock priority(Object value){
             return with("priority", value);
         }
 
-        InvalidAdBudgetMock priority(){
+        FlexibleAdBudgetMock priority(){
             return withOut("priority");
         }
 
-        InvalidAdBudgetMock quota(Object value){
+        FlexibleAdBudgetMock quota(Object value){
             return with("quota", value);
         }
 
-        InvalidAdBudgetMock quota(){
+        FlexibleAdBudgetMock quota(){
             return withOut("quota");
         }
 
@@ -373,11 +371,11 @@ class FileBackedAdBudgetPlanStoreTest {
         }
     }
 
-    private static AdBudgetMock[] createArrayOfAdBudgetMocks(int count) {
-        var budgetMocks = new AdBudgetMock[count];
+    private static StrictAdBudgetMock[] createArrayOfStrictAdBudgetMocks(int count) {
+        var budgetMocks = new StrictAdBudgetMock[count];
         Random r = new Random();
         for (int i = 0; i < budgetMocks.length; i++) {
-            budgetMocks[i] = new AdBudgetMock("test" + i,
+            budgetMocks[i] = new StrictAdBudgetMock("test" + i,
                     (int)(100 * r.nextDouble(0.01d, 0.99d))/100d,
                     r.nextLong(100, 4000));
         }

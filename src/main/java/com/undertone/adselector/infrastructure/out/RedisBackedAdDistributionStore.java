@@ -36,9 +36,10 @@ public class RedisBackedAdDistributionStore implements AdDistributionStore {
         requireNonNull(adBudget, "Argument adBudget must not be null");
 
         return redisTemplate.opsForValue().get(adBudget.aid())
-                .map(strRemainingQuota ->
+                .switchIfEmpty(Mono.just("0"))
+                    .map(strUsedQuota ->
                         new RedisBackedAdDistribution(adBudget,
-                                convertToLongValue(strRemainingQuota)));
+                                adBudget.quota() - convertToLongValue(strUsedQuota)));
     }
 
     @Override
